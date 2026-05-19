@@ -1,0 +1,119 @@
+USE FoodDeliveryDB;
+GO
+
+--Bulk Insert from JSON
+--This procedure takes a JSON string, parses it into a table structure, and inserts it.
+CREATE PROCEDURE Restaurant.BulkInsertRestaurants
+    @JsonData NVARCHAR(MAX) -- JSON input
+AS
+BEGIN
+    INSERT INTO Restaurant.Profiles (Name, Phone, Rating, IsOpen, LicenceNo, IsVeg)
+    SELECT Name, Phone, Rating, IsOpen, LicenceNo, IsVeg
+    FROM OPENJSON(@JsonData) -- Parses JSON string into rows
+    WITH (
+        Name NVARCHAR(150),
+        Phone NVARCHAR(15),
+        Rating DECIMAL(2,1),
+        IsOpen BIT,
+        LicenceNo NVARCHAR(50),
+        IsVeg BIT
+    );
+END;
+GO
+
+--Bulk Insert from XML
+--XML is still common in government and enterprise banking systems.
+CREATE PROCEDURE Restaurant.BulkInsertRestaurantsXML
+    @XmlData XML -- Your XML input
+AS
+BEGIN
+    INSERT INTO Restaurant.Profiles (Name, Phone, Rating, IsOpen, LicenceNo, IsVeg)
+    SELECT 
+        T.c.value('(Name)[1]', 'NVARCHAR(150)'),
+        T.c.value('(Phone)[1]', 'NVARCHAR(15)'),
+        T.c.value('(Rating)[1]', 'DECIMAL(2,1)'),
+        T.c.value('(IsOpen)[1]', 'BIT'),
+        T.c.value('(LicenceNo)[1]', 'NVARCHAR(50)'),
+        T.c.value('(IsVeg)[1]', 'BIT')
+    FROM @XmlData.nodes('/Restaurants/Restaurant') AS T(c);
+END;
+GO
+
+-- JSON Bulk Update (The "Merging" Technique)
+CREATE PROCEDURE Restaurant.BulkUpsertRestaurants
+    @JsonData NVARCHAR(MAX)
+AS
+BEGIN
+    MERGE Restaurant.Profiles AS Target
+    USING (
+        SELECT * FROM OPENJSON(@JsonData) 
+        WITH (LicenceNo NVARCHAR(50), Name NVARCHAR(150), Phone NVARCHAR(15))
+    ) AS Source
+    ON Target.LicenceNo = Source.LicenceNo -- Match by unique key
+    WHEN MATCHED THEN
+        UPDATE SET Target.Name = Source.Name, Target.Phone = Source.Phone
+    WHEN NOT MATCHED THEN
+        INSERT (Name, Phone, LicenceNo) VALUES (Source.Name, Source.Phone, Source.LicenceNo);
+END;
+GO
+
+DECLARE @MyJson NVARCHAR(MAX) = '[
+    {"Name": "Cafe Coffee Day", "Phone": "1234567890", "Rating": 4.0, "IsOpen": 1, "LicenceNo": "CCD-1", "IsVeg": 1},
+    {"Name": "Starbucks", "Phone": "0987654321", "Rating": 4.5, "IsOpen": 1, "LicenceNo": "SB-1", "IsVeg": 1}
+]';
+
+EXEC Restaurant.BulkInsertRestaurants @JsonData = @MyJson;
+
+--Bulk Upsert (Update + Insert) via XML
+GO
+CREATE PROCEDURE Restaurant.BulkUpsertRestaurantsXML
+    @XmlData XML -- Input parameter containing the entire XML block
+AS
+BEGIN
+    SET NOCOUNT ON;
+    -- We use a CTE to parse the XML into a temporary structure
+    WITH ParsedXML AS (
+        SELECT 
+            T.c.value('(LicenceNo)[1]', 'NVARCHAR(50)') AS LicenceNo,
+            T.c.value('(Name)[1]', 'NVARCHAR(150)') AS Name,
+            T.c.value('(Phone)[1]', 'NVARCHAR(15)') AS Phone,
+            T.c.value('(Rating)[1]', 'DECIMAL(2,1)') AS Rating
+        FROM @XmlData.nodes('/Restaurants/Restaurant') AS T(c)
+    )
+    -- The MERGE statement acts as our engine
+    MERGE Restaurant.Profiles AS Target
+    USING ParsedXML AS Source
+    ON Target.LicenceNo = Source.LicenceNo -- Match records by the unique License Number
+    
+    -- If the LicenceNo exists, update the details
+    WHEN MATCHED THEN
+        UPDATE SET 
+            Target.Name = Source.Name, 
+            Target.Phone = Source.Phone,
+            Target.Rating = Source.Rating
+            
+    -- If the LicenceNo does not exist, insert it as a new row
+    WHEN NOT MATCHED THEN
+        INSERT (LicenceNo, Name, Phone, Rating, IsOpen, IsVeg)
+        VALUES (Source.LicenceNo, Source.Name, Source.Phone, Source.Rating, 1, 1);
+END;
+GO
+
+DECLARE @MyXml XML = '
+<Restaurants>
+    <Restaurant>
+        <LicenceNo>CCD-1</LicenceNo>
+        <Name>Cafe Coffee Day - Updated</Name>
+        <Phone>1234567890</Phone>
+        <Rating>4.2</Rating>
+    </Restaurant>
+    <Restaurant>
+        <LicenceNo>NEW-REST-01</LicenceNo>
+        <Name>New Fresh Kitchen</Name>
+        <Phone>9876543210</Phone>
+        <Rating>4.5</Rating>
+    </Restaurant>
+</Restaurants>';
+
+EXEC Restaurant.BulkUpsertRestaurantsXML @XmlData = @MyXml;
+
